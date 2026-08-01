@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Downloaded/extracted raw datasets and derived frames (large, re-fetchable
+# via data/prepare_ets2_manifest.py + the Zenodo record in its docstring)
+data/raw/
+
+# Re-downloadable model asset (see data/head_pose.py for the source URL)
+models_data/
+
+# Generated demo output
+outputs/
