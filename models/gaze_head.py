@@ -4,9 +4,10 @@ Reuses the driver-branch embedding as a query attending over the road
 image's ViT patch grid. With no gaze_target supplied it's trained only
 indirectly through the classification loss (read the map as "what the model
 weighted," not a physical point of regard). When the manifest provides a
-gaze_target (see data/head_pose.py — a head-pose-derived proxy, not measured
-eye-tracking), train.py adds a soft-target loss via gaze_target_heatmap()
-below so the map is actually supervised.
+gaze_target (see data/gaze_estimation.py — a Gaze360-pretrained estimator's
+output, projected onto the road image via an uncalibrated heuristic FOV,
+not measured eye-tracking on this dataset), train.py adds a soft-target loss
+via gaze_target_heatmap() below so the map is actually supervised.
 """
 
 import torch
