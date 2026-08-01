@@ -53,6 +53,7 @@ def main():
     parser.add_argument("--no-text", action="store_true", help="Disable the optional text branch")
     parser.add_argument("--gaze-loss-weight", type=float, default=0.5, help="Weight for the gaze_target auxiliary loss, when the manifest provides one")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--save-checkpoint", default=None, help="Path to save the trained state_dict at the end")
     args = parser.parse_args()
 
     config = DriverStateConfig(use_text=not args.no_text, num_classes=args.num_classes)
@@ -102,6 +103,10 @@ def main():
         if total_gaze_loss:
             msg += f" gaze_loss={total_gaze_loss / total_n:.4f}"
         print(msg)
+
+    if args.save_checkpoint:
+        torch.save(model.state_dict(), args.save_checkpoint)
+        print(f"Saved checkpoint to {args.save_checkpoint}")
 
 
 if __name__ == "__main__":
