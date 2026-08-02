@@ -40,13 +40,15 @@ What's explicitly de-scoped or on hold, and why:
   a separate detector — not implemented).
 - **Pedestrian-side state estimation** (the pedestrian's own crossing
   intention / attention-to-traffic, as opposed to the driver's) — a
-  separate, better-supported research direction identified as a candidate
-  next step (JAAD dataset — 346 clips, 3.1GB, verified downloadable, no
-  registration, with real "looking at traffic" + crossing-intention
-  annotations). **Not started.** Explicitly planned as a *future addition*
-  layered on top of the current architecture rather than a replacement —
-  see "Integrating pedestrian-state estimation later" below for how it's
-  meant to slot in without changing what's already built.
+  separate, better-supported research direction (JAAD dataset — 346 clips,
+  3.1GB, verified downloadable, no registration, with real per-frame
+  "looking at traffic" / "crossing" / "walking-vs-standing" annotations —
+  no proxy labels needed here, unlike the driver side). **In progress** as
+  a standalone model (`models/pedestrian_state_model.py`,
+  `train_pedestrian.py`), deliberately not wired into `DriverStateModel` yet
+  — see "Pedestrian-state estimation (JAAD)" and "Integrating pedestrian-
+  state estimation later" below for results and how it's meant to attach
+  without changing what's already built.
 
 ## Architecture
 
@@ -223,18 +225,63 @@ results gallery for a concrete before/after comparison.
 | `make_animated_examples.py` | Same, but per-frame across a clip → animated GIFs |
 | `visualize_gaze.py` | Quick sanity-check on synthetic images (no real data needed) |
 | `check_pedestrians.py` | Diagnostic: scans road-camera frames for pedestrian detections (COCO detector, no extra data). Used to confirm ETS2 has none. |
+| `data/prepare_jaad_manifest.py` | Build a pedestrian-crop manifest.json from raw JAAD video+XML annotations |
+| `train_pedestrian.py` | Train the standalone `PedestrianStateModel` on a JAAD manifest |
+| `make_pedestrian_gallery.py` | Run a pedestrian-state checkpoint over sample crops → JSON for a results gallery |
+
+## Pedestrian-state estimation (JAAD)
+
+A **standalone** model (`models/pedestrian_state_model.py`: frozen
+`facebook/dinov2-base` — same ViT as `DriverStateModel`, on purpose — plus
+three small classification heads) trained on real JAAD annotations, not a
+proxy. No dataset access issues here: JAAD's clips + XML annotations
+download directly (3.1GB, no registration — verified), and every pedestrian
+track already has real per-frame `look` (looking/not-looking at traffic),
+`cross` (crossing/not-crossing), and `action` (walking/standing) labels.
+
+```bash
+# after downloading+extracting JAAD_clips.zip and cloning ykotseruba/JAAD's
+# annotations/ folder:
+python data/prepare_jaad_manifest.py \
+  --annotations-dir /path/to/JAAD/annotations \
+  --clips-dir /path/to/JAAD_clips \
+  --out-dir data/raw/jaad/prepared --frame-stride 15
+
+python train_pedestrian.py --manifest data/raw/jaad/prepared/manifest.json \
+  --epochs 5 --save-checkpoint outputs/pedestrian_state_model.pt
+```
+
+**Results** (9,074 crops from 346 clips, held-out validation split):
+
+| Attribute | Majority baseline | Val accuracy after 5 epochs |
+|---|---|---|
+| `cross` (crossing intention) | 55.7% | **79.6%** — genuinely learned |
+| `action` (walking vs. standing) | 85.0% | 87.9% — modest improvement |
+| `look` (looking at traffic) | 82.0% | 83.5% — barely above baseline |
+
+Crossing intention trains well from a single frame. Attention (`look`) does
+not — visually, the model mostly predicts "not-looking" regardless of the
+true label. Single-frame appearance may just be a weak cue for gaze
+direction on typically-small, low-resolution pedestrian crops; the
+head-pose-specialized approach used for the driver side (`gaze_resnet18`,
+see above) might transfer better here than a generic frozen-ViT classifier
+— not tried yet.
 
 ## Integrating pedestrian-state estimation later
 
-The plan discussed (not yet implemented) is to add pedestrian-side state
-estimation (crossing intention / attention-to-traffic, via JAAD) as an
-**additional branch**, not a rework of what's here — the same pattern
-`ControlEncoder` and `TextEncoder` already follow:
+`models/pedestrian_state_model.py` exists now and trains on its own (see
+above), but it is **not wired into `DriverStateModel`** — that integration
+is still just a plan, deliberately deferred until there's a dataset with
+road camera + driver camera + control *and* pedestrians together (JAAD has
+no driver-facing camera or control telemetry; ETS2 has no pedestrians).
+The plan is to add it as an **additional branch**, not a rework of what's
+here — the same pattern `ControlEncoder` and `TextEncoder` already follow:
 
-1. A new `models/pedestrian_encoder.py` (name TBD) takes detected
-   pedestrian crops (or region features) from the road camera and produces
+1. `PedestrianStateModel`'s frozen ViT + pooled features (or a thin
+   adapter over them) feed a new `models/pedestrian_encoder.py`, producing
    a fixed-size token set, the same way `ControlEncoder.forward()` turns a
-   variable-length control window into `num_control_tokens` tokens.
+   variable-length control window into `num_control_tokens` tokens. Reusing
+   `facebook/dinov2-base` for both was a deliberate choice for this reason.
 2. `DriverStateModel.__init__` gains one more optional branch behind a
    `config.use_pedestrian` flag (mirrors `config.use_text`), and
    `DriverStateModel.forward()` appends its output to `token_streams`
