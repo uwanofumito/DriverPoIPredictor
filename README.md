@@ -1,6 +1,6 @@
 # driver-state-vla
 
-Driver-state (alertness/distraction) classifier built by repurposing
+Driver-state estimation model built by repurposing
 [Wild-Drive](https://github.com/wangzihanggg/Wild-Drive)'s ViT + MoRo-Former
 tokenizer. Wild-Drive fuses camera + LiDAR into tokens for an LLM captioner
 and a trajectory planner; this project keeps only the tokenizer, feeds it
@@ -8,6 +8,45 @@ road-facing + driver-facing camera instead of camera + LiDAR, adds a control
 (steering/throttle/brake/speed + acceleration) token stream and an optional
 text token stream, and replaces the LLM/planner with a small transformer
 classification head plus a gaze-heatmap head.
+
+## Project status (read this first)
+
+What's actually working and validated end-to-end on real data:
+- The tokenizer/fusion pipeline (road + driver camera → MoRo-Former → tokens)
+- Control-signal encoding (real steering/throttle/brake/speed/accel from ETS2)
+- **GazeHead, supervised against a Gaze360-pretrained gaze estimator** — this
+  is the part of the model that's actually learning something meaningful
+  (loss drops steadily across training). See the results gallery for a
+  before/after visual.
+
+What's explicitly de-scoped or on hold, and why:
+- **Distraction/alertness classification** (the `logits` output) — kept in
+  the architecture, but not a near-term goal. ETS2 essentially contains no
+  real distraction behavior (subjects had no secondary task), so the
+  classifier reliably collapses to the majority class no matter how the
+  proxy label is tuned. Not a bug to fix; a data problem with no cheap fix.
+- **"Looked-but-failed-to-see" driver inattention** (hazard visible on the
+  road, e.g. a crossing pedestrian, but driving behavior/control doesn't
+  respond to it) — the actual target concept behind the classifier, but
+  requires (a) hazard/pedestrian detection on the road camera and (b) a
+  behavior-mismatch label, neither of which exist yet. Checked whether ETS2
+  could support this first: ran a COCO-pretrained detector
+  (`check_pedestrians.py`) over all 113 road-camera frames — **zero real
+  pedestrian detections** (one 0.57-confidence hit, visually confirmed to be
+  a false positive). ETS2 is a highway/rural trucking sim; this scenario
+  just doesn't occur in it. On hold pending a dataset that actually has it
+  (CARLA-scripted scenarios were discussed as the most promising route,
+  since CARLA can supply ground-truth hazard-visibility rather than needing
+  a separate detector — not implemented).
+- **Pedestrian-side state estimation** (the pedestrian's own crossing
+  intention / attention-to-traffic, as opposed to the driver's) — a
+  separate, better-supported research direction identified as a candidate
+  next step (JAAD dataset — 346 clips, 3.1GB, verified downloadable, no
+  registration, with real "looking at traffic" + crossing-intention
+  annotations). **Not started.** Explicitly planned as a *future addition*
+  layered on top of the current architecture rather than a replacement —
+  see "Integrating pedestrian-state estimation later" below for how it's
+  meant to slot in without changing what's already built.
 
 ## Architecture
 
@@ -172,3 +211,39 @@ simulator study (no secondary task was assigned to subjects) to learn a
 decision boundary from. The gaze heatmap is the part of this pipeline that
 trains meaningfully — its loss drops steadily across epochs. See the
 results gallery for a concrete before/after comparison.
+
+## Scripts
+
+| Script | Purpose |
+|---|---|
+| `train.py` | Train (mock or real manifest), optionally save a checkpoint |
+| `data/prepare_ets2_manifest.py` | Build a manifest.json from raw ETS2 video+telemetry |
+| `data/gaze_estimation.py` | Gaze360-pretrained gaze estimation (library, not a script) |
+| `make_results_gallery.py` | Run a checkpoint over real events → static overlay images + JSON |
+| `make_animated_examples.py` | Same, but per-frame across a clip → animated GIFs |
+| `visualize_gaze.py` | Quick sanity-check on synthetic images (no real data needed) |
+| `check_pedestrians.py` | Diagnostic: scans road-camera frames for pedestrian detections (COCO detector, no extra data). Used to confirm ETS2 has none. |
+
+## Integrating pedestrian-state estimation later
+
+The plan discussed (not yet implemented) is to add pedestrian-side state
+estimation (crossing intention / attention-to-traffic, via JAAD) as an
+**additional branch**, not a rework of what's here — the same pattern
+`ControlEncoder` and `TextEncoder` already follow:
+
+1. A new `models/pedestrian_encoder.py` (name TBD) takes detected
+   pedestrian crops (or region features) from the road camera and produces
+   a fixed-size token set, the same way `ControlEncoder.forward()` turns a
+   variable-length control window into `num_control_tokens` tokens.
+2. `DriverStateModel.__init__` gains one more optional branch behind a
+   `config.use_pedestrian` flag (mirrors `config.use_text`), and
+   `DriverStateModel.forward()` appends its output to `token_streams`
+   before the `[CLS]` + transformer classifier — no change to
+   `MoRoFormer`, `GazeHead`, `ControlEncoder`, or the classifier itself.
+3. The manifest schema gains an optional field (e.g. `"pedestrians": [...]`)
+   the same way `gaze_target` was added without breaking manifests that
+   don't have it (`ManifestDataset`/`collate_driver_state` both already
+   handle optional fields this way — see `dataset.py`).
+
+This keeps today's architecture and trained components (gaze estimation
+pipeline, fusion tokenizer) reusable as-is when that work starts.
