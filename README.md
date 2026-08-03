@@ -9,6 +9,48 @@ road-facing + driver-facing camera instead of camera + LiDAR, adds a control
 text token stream, and replaces the LLM/planner with a small transformer
 classification head plus a gaze-heatmap head.
 
+## Open issues — start here in a new session
+
+Two unresolved problems surfaced late in the session that built this
+codebase, neither fixed yet. Read these before writing any more code.
+
+**1. Redundant ViT backbone (should be fixed).** `DriverStateModel`
+([models/driver_state_model.py#L32](models/driver_state_model.py#L32)) and
+`PedestrianStateModel`
+([models/pedestrian_state_model.py](models/pedestrian_state_model.py)) each
+call `AutoModel.from_pretrained("facebook/dinov2-base")` independently —
+two separate copies of the same frozen weights loaded into memory, for no
+benefit. They were built as fully separate model classes because JAAD (no
+driver camera/control) and ETS2 (no pedestrians) never overlap in a single
+training batch, so a genuinely joint forward pass isn't possible yet — that
+reasoning still holds. But the ViT itself doesn't need duplicating just
+because the datasets don't overlap. The fix: factor out a shared vision
+backbone module both models take as a constructor argument (or reference
+a shared instance), so there's exactly one `facebook/dinov2-base` in
+memory, with each model's own task-specific heads (classifier + GazeHead
+for one; look/cross/action heads for the other) staying separate as before.
+
+**2. This was never actually a VLA.** The project started from a request
+to build a VLA (Vision-Language-Action) driver-state estimator. What got
+built is a vision(+control+optional-text)-conditioned *classifier* with an
+auxiliary heatmap head (`DriverStateModel.forward()` returns `{"logits":
+[B,num_classes], "gaze_heatmap": [B,16,16]}` — see
+[models/driver_state_model.py#L113-L155](models/driver_state_model.py#L113-L155)).
+Control data (steering/throttle/brake/speed/accel) is consumed as *input*,
+never produced as *output* — there is no action output anywhere in either
+model. This was not caught until directly questioned; nobody verified the
+"VLA" label against what was actually implemented as the project evolved.
+Needs a decision before more work: either (a) redesign so the model
+actually outputs an action/control prediction (making "VLA" accurate), or
+(b) drop the VLA framing and describe this honestly as what it is — a
+driver/pedestrian state classifier — and stop calling it VLA in docs, code,
+and future discussion.
+
+Do not build further pedestrian-DriverStateModel integration work (see
+below) on top of the current duplicated-backbone structure — resolve (1)
+first, since integration is exactly the moment the duplication becomes
+actively wasteful rather than just untidy.
+
 ## Project status (read this first)
 
 What's actually working and validated end-to-end on real data:
